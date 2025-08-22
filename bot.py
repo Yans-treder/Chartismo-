@@ -294,23 +294,33 @@ class Backtester:
         self.analyzer = PatternAnalyzer()
         self.results = []
     
-    def download_historical_data(self, symbol, start_date, end_date, interval='1h'):
-        """Descarga datos históricos de Yahoo Finance"""
+    def download_historical_data(self, symbol, timeframe, days=60):
+        """Descarga datos históricos de Yahoo Finance con el período adecuado"""
         try:
             ticker = yf.Ticker(symbol)
-            df = ticker.history(start=start_date, end=end_date, interval=interval)
+            
+            # Determinar el período basado en el timeframe
+            if timeframe == "15m":
+                period = "60d"  # Máximo permitido por Yahoo Finance para 15m
+            elif timeframe == "1h":
+                period = "730d"  # Máximo permitido para 1h
+            else:
+                period = f"{days}d"
+            
+            df = ticker.history(interval=timeframe, period=period)
             return df
         except Exception as e:
             print(f"Error descargando datos para {symbol}: {e}")
             return None
     
-    def run_backtest(self, symbol, start_date, end_date, timeframe, initial_balance=10000):
-        """Ejecuta backtesting para un símbolo y período específico"""
-        print(f"Ejecutando backtest para {symbol} ({timeframe}) desde {start_date} hasta {end_date}")
+    def run_backtest(self, symbol, timeframe, days=60, initial_balance=10000):
+        """Ejecuta backtesting para un símbolo y timeframe específico"""
+        print(f"Ejecutando backtest para {symbol} ({timeframe}) para los últimos {days} días")
         
         # Descargar datos históricos
-        df = self.download_historical_data(symbol, start_date, end_date, timeframe)
+        df = self.download_historical_data(symbol, timeframe, days)
         if df is None or df.empty:
+            print(f"No se pudieron obtener datos para {symbol} en {timeframe}")
             return None
         
         # Preparar variables para el backtest
@@ -349,8 +359,8 @@ class Backtester:
                     })
                     print(f"{current_date}: COMPRA a {current_price} por patrones {bullish_patterns}")
                 
-                elif bearish_patterns and False:  # Desactivado para solo operar largas por ahora
-                    # Entrar en posición corta (si decides operar en corto)
+                elif bearish_patterns:
+                    # Entrar en posición corta
                     position = -1
                     entry_price = current_price
                     trades.append({
@@ -371,15 +381,30 @@ class Backtester:
                 # Calcular ganancia/pérdida
                 if position == 1:  # Posición larga
                     profit_pct = (current_price - entry_price) / entry_price
-                    exit_condition = (profit_pct >= profit_target or 
-                                     profit_pct <= -stop_loss or 
-                                     len(trades) > 0 and (current_date - trades[-1]['date']).total_seconds() / (60*60) >= holding_period)
+                    # Convertir timedelta a horas para timeframe de 1h
+                    if timeframe == "1h":
+                        hours_held = (current_date - trades[-1]['date']).total_seconds() / 3600
+                        exit_condition = (profit_pct >= profit_target or 
+                                         profit_pct <= -stop_loss or 
+                                         hours_held >= holding_period)
+                    else:  # Para 15m, usar número de velas
+                        candles_held = len(df) - i
+                        exit_condition = (profit_pct >= profit_target or 
+                                         profit_pct <= -stop_loss or 
+                                         candles_held >= holding_period)
                 
                 elif position == -1:  # Posición corta
                     profit_pct = (entry_price - current_price) / entry_price
-                    exit_condition = (profit_pct >= profit_target or 
-                                     profit_pct <= -stop_loss or 
-                                     len(trades) > 0 and (current_date - trades[-1]['date']).total_seconds() / (60*60) >= holding_period)
+                    if timeframe == "1h":
+                        hours_held = (current_date - trades[-1]['date']).total_seconds() / 3600
+                        exit_condition = (profit_pct >= profit_target or 
+                                         profit_pct <= -stop_loss or 
+                                         hours_held >= holding_period)
+                    else:
+                        candles_held = len(df) - i
+                        exit_condition = (profit_pct >= profit_target or 
+                                         profit_pct <= -stop_loss or 
+                                         candles_held >= holding_period)
                 
                 if exit_condition:
                     # Salir de la posición
@@ -410,8 +435,6 @@ class Backtester:
         result = {
             'symbol': symbol,
             'timeframe': timeframe,
-            'start_date': start_date,
-            'end_date': end_date,
             'initial_balance': initial_balance,
             'final_balance': final_balance,
             'total_return': total_return,
@@ -423,13 +446,13 @@ class Backtester:
         self.results.append(result)
         return result
     
-    def run_multiple_backtests(self, symbols, timeframes, start_date, end_date, initial_balance=10000):
+    def run_multiple_backtests(self, symbols, timeframes, days=60, initial_balance=10000):
         """Ejecuta backtests para múltiples símbolos y timeframes"""
         all_results = []
         
         for symbol in symbols:
             for timeframe in timeframes:
-                result = self.run_backtest(symbol, start_date, end_date, timeframe, initial_balance)
+                result = self.run_backtest(symbol, timeframe, days, initial_balance)
                 if result:
                     all_results.append(result)
         
@@ -447,7 +470,6 @@ class Backtester:
         
         for result in results:
             print(f"\nSímbolo: {result['symbol']} | Timeframe: {result['timeframe']}")
-            print(f"Período: {result['start_date']} to {result['end_date']}")
             print(f"Balance inicial: ${result['initial_balance']:.2f}")
             print(f"Balance final: ${result['final_balance']:.2f}")
             print(f"Retorno total: {result['total_return']:.2f}%")
@@ -456,12 +478,13 @@ class Backtester:
             print("-" * 40)
         
         # Calcular promedios
-        avg_return = np.mean([r['total_return'] for r in results])
-        avg_win_rate = np.mean([r['win_rate'] for r in results])
-        
-        print(f"\nRESUMEN GENERAL:")
-        print(f"Retorno promedio: {avg_return:.2f}%")
-        print(f"Ratio de acierto promedio: {avg_win_rate:.2f}%")
+        if results:
+            avg_return = np.mean([r['total_return'] for r in results])
+            avg_win_rate = np.mean([r['win_rate'] for r in results])
+            
+            print(f"\nRESUMEN GENERAL:")
+            print(f"Retorno promedio: {avg_return:.2f}%")
+            print(f"Ratio de acierto promedio: {avg_win_rate:.2f}%")
         print("="*80)
     
     def plot_results(self, results):
@@ -474,7 +497,7 @@ class Backtester:
         for result in results:
             # Extraer balances a lo largo del tiempo
             balances = [result['initial_balance']]
-            dates = [result['start_date']]
+            dates = [result['trades'][0]['date'] if result['trades'] else datetime.now()]
             
             for trade in result['trades']:
                 if 'balance' in trade:
@@ -495,30 +518,30 @@ class Backtester:
         plt.show()
         
         # Gráfico de distribución de retornos
-        returns = [r['total_return'] for r in results]
-        plt.figure(figsize=(10, 6))
-        plt.hist(returns, bins=20, alpha=0.7, edgecolor='black')
-        plt.axvline(np.mean(returns), color='red', linestyle='dashed', linewidth=1, label=f'Media: {np.mean(returns):.2f}%')
-        plt.title('Distribución de Retornos')
-        plt.xlabel('Retorno (%)')
-        plt.ylabel('Frecuencia')
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.show()
+        if len(results) > 1:
+            returns = [r['total_return'] for r in results]
+            plt.figure(figsize=(10, 6))
+            plt.hist(returns, bins=20, alpha=0.7, edgecolor='black')
+            plt.axvline(np.mean(returns), color='red', linestyle='dashed', linewidth=1, label=f'Media: {np.mean(returns):.2f}%')
+            plt.title('Distribución de Retornos')
+            plt.xlabel('Retorno (%)')
+            plt.ylabel('Frecuencia')
+            plt.legend()
+            plt.grid(True)
+            plt.tight_layout()
+            plt.show()
 
 # Ejemplo de uso
 if __name__ == "__main__":
-    # Configuración
+    # Configuración para datos intraday (15m, 1h)
     symbols = ["BTC-USD", "ETH-USD", "SOL-USD"]
     timeframes = ["15m", "1h"]
-    start_date = "2023-01-01"
-    end_date = "2023-12-31"
+    days = 30  # Últimos 30 días (dentro del límite de Yahoo Finance)
     initial_balance = 10000
     
     # Crear backtester y ejecutar pruebas
     backtester = Backtester()
-    results = backtester.run_multiple_backtests(symbols, timeframes, start_date, end_date, initial_balance)
+    results = backtester.run_multiple_backtests(symbols, timeframes, days, initial_balance)
     
     # Generar reporte y gráficos
     backtester.generate_report(results)
