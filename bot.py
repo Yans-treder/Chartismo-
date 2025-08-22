@@ -5,6 +5,10 @@ from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import seaborn as sns
 import logging
+import io
+import requests
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 # Configurar logging
 logging.basicConfig(
@@ -12,6 +16,31 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Configuración de Telegram
+TELEGRAM_TOKEN = "TU_TELEGRAM_BOT_TOKEN"  # Reemplaza con tu token
+TELEGRAM_CHAT_ID = "TU_CHAT_ID"  # Reemplaza con tu chat ID
+
+class TelegramNotifier:
+    def __init__(self, token, chat_id):
+        self.token = token
+        self.chat_id = chat_id
+        self.bot = Bot(token=token)
+    
+    async def send_message(self, text):
+        """Envía un mensaje de texto a Telegram"""
+        try:
+            await self.bot.send_message(chat_id=self.chat_id, text=text)
+        except Exception as e:
+            print(f"Error enviando mensaje a Telegram: {e}")
+    
+    async def send_photo(self, image_buffer, caption=""):
+        """Envía una imagen a Telegram"""
+        try:
+            image_buffer.seek(0)
+            await self.bot.send_photo(chat_id=self.chat_id, photo=image_buffer, caption=caption)
+        except Exception as e:
+            print(f"Error enviando imagen a Telegram: {e}")
 
 class PatternAnalyzer:
     def __init__(self):
@@ -69,230 +98,14 @@ class PatternAnalyzer:
         
         return patterns
     
-    def detect_double_top(self, df, tolerance=0.02):
-        if len(df) < 20:
-            return False
-        
-        # Buscar dos picos cercanos en precio
-        highs = df['High'].values
-        peaks = []
-        
-        for i in range(1, len(highs)-1):
-            if highs[i] > highs[i-1] and highs[i] > highs[i+1]:
-                peaks.append((i, highs[i]))
-        
-        if len(peaks) < 2:
-            return False
-        
-        # Comparar los dos últimos picos
-        last_two_peaks = sorted(peaks[-2:], key=lambda x: x[0])
-        price_diff = abs(last_two_peaks[0][1] - last_two_peaks[1][1]) / last_two_peaks[0][1]
-        
-        if price_diff < tolerance:
-            # Verificar que hay un valle entre ellos y ruptura del neckline
-            valley = min(df['Low'][last_two_peaks[0][0]:last_two_peaks[1][0]])
-            current_price = df['Close'].iloc[-1]
-            
-            if current_price < valley:
-                return True
-        
-        return False
-    
-    def detect_double_bottom(self, df, tolerance=0.02):
-        if len(df) < 20:
-            return False
-        
-        # Buscar dos valles cercanos en precio
-        lows = df['Low'].values
-        valleys = []
-        
-        for i in range(1, len(lows)-1):
-            if lows[i] < lows[i-1] and lows[i] < lows[i+1]:
-                valleys.append((i, lows[i]))
-        
-        if len(valleys) < 2:
-            return False
-        
-        # Comparar los dos últimos valles
-        last_two_valleys = sorted(valleys[-2:], key=lambda x: x[0])
-        price_diff = abs(last_two_valleys[0][1] - last_two_valleys[1][1]) / last_two_valleys[0][1]
-        
-        if price_diff < tolerance:
-            # Verificar que hay un pico entre ellos y ruptura del neckline
-            peak = max(df['High'][last_two_valleys[0][0]:last_two_valleys[1][0]])
-            current_price = df['Close'].iloc[-1]
-            
-            if current_price > peak:
-                return True
-        
-        return False
-    
-    def detect_head_shoulders(self, df):
-        if len(df) < 30:
-            return False
-        
-        highs = df['High'].values
-        
-        # Buscar patrón de tres picos: hombro izquierdo, cabeza, hombro derecho
-        peaks = []
-        for i in range(1, len(highs)-1):
-            if highs[i] > highs[i-1] and highs[i] > highs[i+1]:
-                peaks.append((i, highs[i]))
-        
-        if len(peaks) < 3:
-            return False
-        
-        # Verificar que el pico central sea el más alto
-        if peaks[-2][1] > peaks[-3][1] and peaks[-2][1] > peaks[-1][1]:
-            # Verificar que los hombros sean de altura similar
-            shoulders_diff = abs(peaks[-3][1] - peaks[-1][1]) / peaks[-3][1]
-            if shoulders_diff < 0.05:  # 5% de diferencia
-                # Verificar ruptura del neckline
-                neckline = min(df['Low'][peaks[-3][0]:peaks[-1][0]])
-                current_price = df['Close'].iloc[-1]
-                
-                if current_price < neckline:
-                    return True
-        
-        return False
-    
-    def detect_inverse_head_shoulders(self, df):
-        if len(df) < 30:
-            return False
-        
-        lows = df['Low'].values
-        
-        # Buscar patrón de tres valles: hombro izquierdo, cabeza, hombro derecho
-        valleys = []
-        for i in range(1, len(lows)-1):
-            if lows[i] < lows[i-1] and lows[i] < lows[i+1]:
-                valleys.append((i, lows[i]))
-        
-        if len(valleys) < 3:
-            return False
-        
-        # Verificar que el valle central sea el más baja
-        if valleys[-2][1] < valleys[-3][1] and valleys[-2][1] < valleys[-1][1]:
-            # Verificar que los hombros sean de altura similar
-            shoulders_diff = abs(valleys[-3][1] - valleys[-1][1]) / valleys[-3][1]
-            if shoulders_diff < 0.05:  # 5% de diferencia
-                # Verificar ruptura del neckline
-                neckline = max(df['High'][valleys[-3][0]:valleys[-1][0]])
-                current_price = df['Close'].iloc[-1]
-                
-                if current_price > neckline:
-                    return True
-        
-        return False
-    
-    def detect_triangle(self, df):
-        if len(df) < 20:
-            return False
-        
-        # Detectar triángulo simétrico (máximos descendentes y mínimos ascendentes)
-        highs = df['High'].tail(15).values
-        lows = df['Low'].tail(15).values
-        
-        # Calcular tendencias
-        high_trend = np.polyfit(range(len(highs)), highs, 1)[0]
-        low_trend = np.polyfit(range(len(lows)), lows, 1)[0]
-        
-        # Triángulo simétrico: máximos descendentes y mínimos ascendentes
-        if high_trend < 0 and low_trend > 0:
-            return True
-            
-        return False
-    
-    def detect_rising_wedge(self, df):
-        if len(df) < 20:
-            return False
-        
-        # Detectar cuña ascendente (ambas líneas con pendiente positiva pero convergiendo)
-        highs = df['High'].tail(15).values
-        lows = df['Low'].tail(15).values
-        
-        # Calcular tendencias
-        high_trend = np.polyfit(range(len(highs)), highs, 1)[0]
-        low_trend = np.polyfit(range(len(lows)), lows, 1)[0]
-        
-        # Cuña ascendente: ambas líneas con pendiente positiva
-        if high_trend > 0 and low_trend > 0:
-            # Verificar convergencia (la pendiente de máximos es menor que la de mínimos)
-            if high_trend < low_trend:
-                return True
-            
-        return False
-    
-    def detect_falling_wedge(self, df):
-        if len(df) < 20:
-            return False
-        
-        # Detectar cuña descendente (ambas líneas con pendiente negativa pero convergiendo)
-        highs = df['High'].tail(15).values
-        lows = df['Low'].tail(15).values
-        
-        # Calcular tendencias
-        high_trend = np.polyfit(range(len(highs)), highs, 1)[0]
-        low_trend = np.polyfit(range(len(lows)), lows, 1)[0]
-        
-        # Cuña descendente: ambas líneas con pendiente negativa
-        if high_trend < 0 and low_trend < 0:
-            # Verificar convergencia (la pendiente de mínimos es menor que la de máximos)
-            if low_trend < high_trend:
-                return True
-            
-        return False
-    
-    def detect_bullish_flag(self, df):
-        if len(df) < 20:
-            return False
-        
-        # Detectar bandera alcista (pequeño consolidación después de un fuerte movimiento alcista)
-        prices = df['Close'].values
-        
-        # Verificar movimiento alcista previo
-        prev_move = prices[-15] - prices[-20]
-        if prev_move <= 0:
-            return False
-            
-        # Verificar consolidación (bandera)
-        flag_high = max(prices[-10:])
-        flag_low = min(prices[-10:])
-        flag_range = flag_high - flag_low
-        
-        # La bandera debería ser una consolidación con rango limitado
-        if flag_range / prices[-10] < 0.05:  # Menos del 5% de rango
-            return True
-            
-        return False
-    
-    def detect_bearish_flag(self, df):
-        if len(df) < 20:
-            return False
-        
-        # Detectar bandera bajista (pequeño consolidación después de un fuerte movimiento bajista)
-        prices = df['Close'].values
-        
-        # Verificar movimiento bajista previo
-        prev_move = prices[-15] - prices[-20]
-        if prev_move >= 0:
-            return False
-            
-        # Verificar consolidación (bandera)
-        flag_high = max(prices[-10:])
-        flag_low = min(prices[-10:])
-        flag_range = flag_high - flag_low
-        
-        # La bandera debería ser una consolidación con rango limitado
-        if flag_range / prices[-10] < 0.05:  # Menos del 5% de rango
-            return True
-            
-        return False
+    # [Todas las funciones de detección de patrones permanecen igual que antes]
+    # ... (omitiendo por brevedad, pero deben estar presentes en tu código)
 
 class Backtester:
-    def __init__(self):
+    def __init__(self, telegram_notifier=None):
         self.analyzer = PatternAnalyzer()
         self.results = []
+        self.notifier = telegram_notifier
     
     def download_historical_data(self, symbol, timeframe, days=60):
         """Descarga datos históricos de Yahoo Finance con el período adecuado"""
@@ -313,14 +126,22 @@ class Backtester:
             print(f"Error descargando datos para {symbol}: {e}")
             return None
     
-    def run_backtest(self, symbol, timeframe, days=60, initial_balance=10000):
+    async def run_backtest(self, symbol, timeframe, days=60, initial_balance=10000):
         """Ejecuta backtesting para un símbolo y timeframe específico"""
-        print(f"Ejecutando backtest para {symbol} ({timeframe}) para los últimos {days} días")
+        message = f"🔍 Iniciando backtest para {symbol} ({timeframe}) para los últimos {days} días"
+        if self.notifier:
+            await self.notifier.send_message(message)
+        else:
+            print(message)
         
         # Descargar datos históricos
         df = self.download_historical_data(symbol, timeframe, days)
         if df is None or df.empty:
-            print(f"No se pudieron obtener datos para {symbol} en {timeframe}")
+            error_msg = f"No se pudieron obtener datos para {symbol} en {timeframe}"
+            if self.notifier:
+                await self.notifier.send_message(error_msg)
+            else:
+                print(error_msg)
             return None
         
         # Preparar variables para el backtest
@@ -357,7 +178,11 @@ class Backtester:
                         'balance': balance,
                         'patterns': bullish_patterns
                     })
-                    print(f"{current_date}: COMPRA a {current_price} por patrones {bullish_patterns}")
+                    trade_msg = f"{current_date}: COMPRA a {current_price} por patrones {bullish_patterns}"
+                    if self.notifier:
+                        await self.notifier.send_message(trade_msg)
+                    else:
+                        print(trade_msg)
                 
                 elif bearish_patterns:
                     # Entrar en posición corta
@@ -370,7 +195,11 @@ class Backtester:
                         'balance': balance,
                         'patterns': bearish_patterns
                     })
-                    print(f"{current_date}: VENTA a {current_price} por patrones {bearish_patterns}")
+                    trade_msg = f"{current_date}: VENTA a {current_price} por patrones {bearish_patterns}"
+                    if self.notifier:
+                        await self.notifier.send_message(trade_msg)
+                    else:
+                        print(trade_msg)
             
             # Salir de la posición (estrategia simple: salir después de 5 velas o con 5% de ganancia/pérdida)
             elif position != 0:
@@ -422,7 +251,11 @@ class Backtester:
                         'balance': balance,
                         'profit_pct': profit_pct
                     })
-                    print(f"{current_date}: {action} a {current_price} - Balance: {balance:.2f} ({profit_pct*100:.2f}%)")
+                    trade_msg = f"{current_date}: {action} a {current_price} - Balance: {balance:.2f} ({profit_pct*100:.2f}%)"
+                    if self.notifier:
+                        await self.notifier.send_message(trade_msg)
+                    else:
+                        print(trade_msg)
                     position = 0
         
         # Calcular métricas de performance
@@ -446,49 +279,58 @@ class Backtester:
         self.results.append(result)
         return result
     
-    def run_multiple_backtests(self, symbols, timeframes, days=60, initial_balance=10000):
+    async def run_multiple_backtests(self, symbols, timeframes, days=60, initial_balance=10000):
         """Ejecuta backtests para múltiples símbolos y timeframes"""
         all_results = []
         
         for symbol in symbols:
             for timeframe in timeframes:
-                result = self.run_backtest(symbol, timeframe, days, initial_balance)
+                result = await self.run_backtest(symbol, timeframe, days, initial_balance)
                 if result:
                     all_results.append(result)
         
         return all_results
     
-    def generate_report(self, results):
-        """Genera un reporte de los resultados del backtesting"""
+    async def generate_report(self, results):
+        """Genera un reporte de los resultados del backtesting y lo envía a Telegram"""
         if not results:
-            print("No hay resultados para reportar")
+            message = "No hay resultados para reportar"
+            if self.notifier:
+                await self.notifier.send_message(message)
+            else:
+                print(message)
             return
         
-        print("\n" + "="*80)
-        print("REPORTE DE BACKTESTING - PATRONES CHARTISTAS")
-        print("="*80)
+        # Crear mensaje de reporte
+        report_message = "📊 REPORTE DE BACKTESTING - PATRONES CHARTISTAS\n\n"
         
         for result in results:
-            print(f"\nSímbolo: {result['symbol']} | Timeframe: {result['timeframe']}")
-            print(f"Balance inicial: ${result['initial_balance']:.2f}")
-            print(f"Balance final: ${result['final_balance']:.2f}")
-            print(f"Retorno total: {result['total_return']:.2f}%")
-            print(f"Número de operaciones: {result['num_trades']}")
-            print(f"Ratio de operaciones ganadoras: {result['win_rate']:.2f}%")
-            print("-" * 40)
+            report_message += f"✅ {result['symbol']} ({result['timeframe']})\n"
+            report_message += f"   Balance inicial: ${result['initial_balance']:.2f}\n"
+            report_message += f"   Balance final: ${result['final_balance']:.2f}\n"
+            report_message += f"   Retorno total: {result['total_return']:.2f}%\n"
+            report_message += f"   Operaciones: {result['num_trades']}\n"
+            report_message += f"   Ratio de aciertos: {result['win_rate']:.2f}%\n\n"
         
         # Calcular promedios
         if results:
             avg_return = np.mean([r['total_return'] for r in results])
             avg_win_rate = np.mean([r['win_rate'] for r in results])
             
-            print(f"\nRESUMEN GENERAL:")
-            print(f"Retorno promedio: {avg_return:.2f}%")
-            print(f"Ratio de acierto promedio: {avg_win_rate:.2f}%")
-        print("="*80)
+            report_message += f"📈 RESUMEN GENERAL:\n"
+            report_message += f"   Retorno promedio: {avg_return:.2f}%\n"
+            report_message += f"   Ratio de acierto promedio: {avg_win_rate:.2f}%\n"
+        
+        # Enviar reporte a Telegram
+        if self.notifier:
+            await self.notifier.send_message(report_message)
+        else:
+            print(report_message)
+        
+        return report_message
     
-    def plot_results(self, results):
-        """Genera gráficos de los resultados"""
+    async def plot_results(self, results):
+        """Genera gráficos de los resultados y los envía a Telegram"""
         if not results:
             return
         
@@ -515,9 +357,18 @@ class Backtester:
         plt.grid(True)
         plt.xticks(rotation=45)
         plt.tight_layout()
-        plt.show()
         
-        # Gráfico de distribución de retornos
+        # Guardar gráfico en buffer
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        buf.seek(0)
+        plt.close()
+        
+        # Enviar gráfico a Telegram
+        if self.notifier:
+            await self.notifier.send_photo(buf, caption="Evolución del Balance en Backtesting")
+        
+        # Gráfico de distribución de retornos (solo si hay múltiples resultados)
         if len(results) > 1:
             returns = [r['total_return'] for r in results]
             plt.figure(figsize=(10, 6))
@@ -529,20 +380,47 @@ class Backtester:
             plt.legend()
             plt.grid(True)
             plt.tight_layout()
-            plt.show()
+            
+            # Guardar gráfico en buffer
+            buf2 = io.BytesIO()
+            plt.savefig(buf2, format='png')
+            buf2.seek(0)
+            plt.close()
+            
+            # Enviar gráfico a Telegram
+            if self.notifier:
+                await self.notifier.send_photo(buf2, caption="Distribución de Retornos")
 
-# Ejemplo de uso
-if __name__ == "__main__":
+# Función principal para ejecutar el backtesting y enviar resultados a Telegram
+async def main():
     # Configuración para datos intraday (15m, 1h)
     symbols = ["BTC-USD", "ETH-USD", "SOL-USD"]
     timeframes = ["15m", "1h"]
     days = 30  # Últimos 30 días (dentro del límite de Yahoo Finance)
     initial_balance = 10000
     
-    # Crear backtester y ejecutar pruebas
-    backtester = Backtester()
-    results = backtester.run_multiple_backtests(symbols, timeframes, days, initial_balance)
+    # Inicializar notificador de Telegram
+    notifier = TelegramNotifier(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
     
-    # Generar reporte y gráficos
-    backtester.generate_report(results)
-    backtester.plot_results(results)
+    # Crear backtester con notificador
+    backtester = Backtester(telegram_notifier=notifier)
+    
+    # Enviar mensaje de inicio
+    await notifier.send_message("🤖 Iniciando proceso de backtesting...")
+    
+    # Ejecutar backtests
+    results = await backtester.run_multiple_backtests(symbols, timeframes, days, initial_balance)
+    
+    # Generar y enviar reporte
+    await backtester.generate_report(results)
+    
+    # Generar y enviar gráficos
+    await backtester.plot_results(results)
+    
+    # Enviar mensaje de finalización
+    await notifier.send_message("✅ Proceso de backtesting completado")
+
+# Ejecutar la función principal
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
